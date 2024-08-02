@@ -10,6 +10,6 @@ This is, for every pair of variables $`X_i,X_j`$, we return $`0`$ if that pair i
 ## Use
 ```
 from discrete_gm_nonpos import discrete_graphical_model
-ci=discrete_graphical_model(c=.1,conservative=False).estimate_CI(X, Y),
+ci=discrete_graphical_model(c=.1,conservative=False).estimate_CI(X, Y)
 ```
 where $`c>0`$ is a regularization constant and conservative reduces the amount of false positives but adds more false negatives. 
