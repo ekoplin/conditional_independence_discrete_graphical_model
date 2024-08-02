@@ -4,8 +4,8 @@ Based on: F. Leonardi, R. Carvalho. Structure recovery for partially observed di
 
 ## Introduction
 
-Given binary matrices X,Y, where the rows are realizations and the columns binary variables, we estimate the conditional independence x_i _||_ x_j | X. 
-This is, for every pair of variables x_i,x_j, we return 0 if that pair is conditional independent and 1 if they are not conditional independent given Y.
+Given binary matrices X,Y, where the rows are realizations and the columns binary variables, we estimate the conditional independence X_i indep. X_j | X. 
+This is, for every pair of variables X_i,X_j, we return 0 if that pair is conditional independent and 1 if they are not conditional independent given Y.
 
 ## Use
 

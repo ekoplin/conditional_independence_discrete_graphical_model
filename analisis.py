@@ -20,8 +20,8 @@ Yregion = pd.get_dummies(pd.Categorical(WS.region)).to_numpy()# convert to binar
 
 for (Y,name) in [(Ynone,"none"), (Yarea,"area"),(Yregion,"region")]:
     indx_nan=np.isnan(X).any(1)|np.isnan(Y).any(1)
-    X = X[~indx_nan,:]
-    Y = Y[~indx_nan,:]
-    ci=discrete_graphical_model(c=.1).estimate_CI(X>0, Y>0)# only binary data allowed
+    Xclean = X[~indx_nan,:]
+    Yclean = Y[~indx_nan,:]
+    ci=discrete_graphical_model(c=.1).estimate_CI(Xclean>0, Yclean>0)# only binary data allowed
     np.savetxt("./ecu_ecv13-14_covar-"+name+".txt", ci , fmt="%5i")
 
