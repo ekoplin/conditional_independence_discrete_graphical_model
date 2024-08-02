@@ -1,1 +1,15 @@
-# conditional_independence_discrete_graphical_model
+# Estimate conditional-independence sets in discrete graphical model without positivity constraints
+Based on: F. Leonardi, R. Carvalho. Structure recovery for partially observed discrete Markov random fields on graphs under not necessarily positive distributions. 2022.
+
+
+## Introduction
+
+Given binary matrices X,Y, where the rows are realizations and the columns binary variables, we estimate the conditional independence x_i _||_ x_j | X. 
+This is, for every pair of variables x_i,x_j, we return 0 if that pair is conditional independent and 1 if they are not conditional independent given Y.
+
+## Use
+
+from discrete_gm_nonpos import discrete_graphical_model
+ci=discrete_graphical_model(c=.1,conservative=False).estimate_CI(X, Y),
+
+where c>0 is a regularization constant and conservative reduces the amount of false positives but adds more false negatives. 

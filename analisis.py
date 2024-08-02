@@ -13,14 +13,15 @@ WS = pd.read_excel('ecu_ecv13-14.xlsx')
 
 
 X = WS[['d_cm','d_nutr','d_satt','d_educ','d_elct','d_wtr','d_sani','d_hsg','d_ckfl','d_asst']].to_numpy()
-Y = pd.Categorical(WS.area).codes.reshape(n,1)
-Y = pd.Categorical(WS.region).codes.reshape(n,1)
 
+Ynone = np.zeros((X.shape[0],0))
+Yarea = pd.Categorical(WS.area).codes.reshape(X.shape[0],1)
+Yregion = pd.get_dummies(pd.Categorical(WS.region)).to_numpy()# convert to binary multivariate
 
-n=X.shape[0]
-indx_nan=np.isnan(X).any(1)|np.isnan(Y).any(1)
-X = X[~indx_nan,:]
-Y = Y[~indx_nan,:]
-ci=discrete_graphical_model(c=0).estimate_CI(X>0, Y>0)
+for (Y,name) in [(Ynone,"none"), (Yarea,"area"),(Yregion,"region")]:
+    indx_nan=np.isnan(X).any(1)|np.isnan(Y).any(1)
+    X = X[~indx_nan,:]
+    Y = Y[~indx_nan,:]
+    ci=discrete_graphical_model(c=.1).estimate_CI(X>0, Y>0)# only binary data allowed
+    np.savetxt("./ecu_ecv13-14_covar-"+name+".txt", ci , fmt="%5i")
 
-ci=discrete_graphical_model(c=.1).estimate_CI(X>0, np.zeros((n,0))>0)
