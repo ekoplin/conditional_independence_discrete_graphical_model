@@ -30,8 +30,8 @@ for name in ["Ynone", "Yarea","Yregion"]:
     Xclean = X[~indx_nan,:]
     Yclean = Y[~indx_nan,:]
     ci=discrete_graphical_model(np.linspace(1, 10,10)).estimate_CI(Xclean>0, Yclean>0)# only binary data allowed
-    os.mkdir("./ecu_ecv13-14_covar/")
+    os.mkdir("./ecu_ecv13-14_covar/"+name)
     for ic in range(len(ci['conserv'])):
-        np.savetxt("./ecu_ecv13-14_covar/"+name+"_conservative_c"+str(ic)+".txt", ci['conserv'][ic] , fmt="%5i")
-        np.savetxt("./ecu_ecv13-14_covar/"+name+"_nconservative_c"+str(ic)+".txt", ci['nconserv'][ic] , fmt="%5i")
+        np.savetxt("./ecu_ecv13-14_covar"+name+"/conservative_c"+str(ic)+".txt", ci['conserv'][ic] , fmt="%5i")
+        np.savetxt("./ecu_ecv13-14_covar/"+name+"/nconservative_c"+str(ic)+".txt", ci['nconserv'][ic] , fmt="%5i")
 
