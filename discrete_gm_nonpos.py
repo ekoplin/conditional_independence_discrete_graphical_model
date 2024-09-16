@@ -139,9 +139,8 @@ class sdr_discrete_graphical_model:
         return(sdr)
 
 class direct_ci_model:
-    def __init__(self,c=np.linspace(.1,1,10),ncores=None):
+    def __init__(self,c=np.linspace(.1,1,10)):
         self.c = c
-        self.ncores = ncores
     def learn(self, X,Y):
         # learn ne(Y)
         # Y|X = Y|R(X) <=> Y _||_ X_i if Xi not in R(X)
@@ -153,7 +152,7 @@ class direct_ci_model:
         self.X=X
         self.Y=Y
         
-        self.dgm = discrete_graphical_model(self.c,self.ncores)
+        self.dgm = discrete_graphical_model(self.c,1)
         YX = np.hstack((Y,X))
         self.ne = self.dgm.compute_ne_i(0, YX>0, np.zeros((YX.shape[0],0))>0) # c x p+1
     def predict(self,X):
@@ -196,7 +195,7 @@ if __name__ == "__main__": # test
     #ci=discrete_graphical_model(np.linspace(1, 10,10),10).estimate_CI(X>0, Y>0)# only binary data allowed
     
     # direct model, predicts Y based on its neighborhood
-    ci = direct_ci_model(c=np.linspace(.1,1,3),ncores=10)
+    ci = direct_ci_model(c=np.linspace(.1,1,3))
     ci.learn(X>0, Y>0)
     Yhat=ci.predict(Xtest>0)
     
