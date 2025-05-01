@@ -10,8 +10,13 @@ This is, for every pair of variables $`X_i,X_j`$, the adjacency matrix is encode
 ## Use
 ```
 from discrete_gm_nonpos import discrete_graphical_model
-CI=discrete_graphical_model(c=np.lispace(.1,1,10),ncores=None).estimate_CI(X, Y)
+
+dgm = discrete_graphical_model(c=np.geomspace(1e3, 1e-9,1000), ncores=None)
+
+CI  = dgm.estimate_stable_CI(X, Y, PFER=.1, npartitions=100, seed=1)
 ```
 where $`c_i>0`$ is a penalization constant.
 
-CI returns a dictionary with keys 'conserv' and 'nconserv', each value is a list containing the adjacency matrices corresponding to each value of $c_i$.
+CI returns a dictionary with keys 'conserv' and 'nconserv', each one contains an estimated adjacency matrix with per-family error rate (PFER) controlled. 
+
+
