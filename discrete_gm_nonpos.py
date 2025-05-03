@@ -19,7 +19,7 @@ def int2bin(x, bits):
 
 class discrete_graphical_model:
     def __init__(self,c=np.linspace(.1,1,10),ncores=None):
-        self.c = np.sort(c.reshape(-1,1))# column in decreasing direction
+        self.c = np.sort(c.reshape(-1))[::-1].reshape(-1, 1)# column in decreasing direction
         self.ncores = ncores
     def _lpl_bic(self,X,indx_v,indx_w,ne_size):
         Xnz = np.zeros_like(X)
@@ -119,11 +119,19 @@ class discrete_graphical_model:
         q_max = np.sqrt(p*PFER*(2*pi_max-1))
         q_min = np.sqrt(p*PFER*(2*pi_min-1)) 
         
+        assert q_min >= 1, f"Invalid range: q_min = {q_min} < 1. Increase PFER, or pi_min"
+        assert q_max < p, f"Invalid range: q_max = {q_max} > {p}. Decrease PFER, or pi_max"
+        
         accepted_q = (Eqhat>q_min) & (Eqhat<q_max)
+        
+        assert np.all(np.any(accepted_q,axis=0)), f"Not encounter any c in {self.c} such that the expected number of discovery {q_min} < q < {q_max}. Extend the c grid"
+        
         lambda_index = np.argmin(np.abs(np.cumsum(accepted_q,axis =0)/np.sum(accepted_q,axis=0)-.5) , axis=0)
         q_c  = Eqhat[lambda_index[0],0]
         q_nc = Eqhat[lambda_index[1],1]   
         
+        assert (q_c>q_min) & (q_c<q_max), f"conserv did not find a c in {self.c} such that q_min={q_min} < q={q_c} < q_max={q_max}"
+        assert (q_nc>q_min) & (q_nc<q_max), f"nconserv did not find a c in {self.c} such that q_min={q_min} < q={q_nc} < q_max={q_max}"
         
         CI_c  = np.mean(np.cumsum(NE,axis=1)>0,axis=0)[lambda_index[0],0,:,:]>(1+q_c**2/p/PFER)/2
         CI_nc = np.mean(np.cumsum(NE,axis=1)>0,axis=0)[lambda_index[1],1,:,:]>(1+q_nc**2/p/PFER)/2
