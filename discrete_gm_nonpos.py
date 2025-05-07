@@ -73,11 +73,13 @@ class discrete_graphical_model:
             ne_v_optim[ic,ne_v[int(ne_v_optim_indx[ic])]]=True 
         #NElst.append(ne_v_optim)
         return(ne_v_optim)
-    def estimate_CI(self,X,Y):
+    def estimate_CI(self,X,Y=None):
         # estimate the neighbourhood of every index
         # X predictors
         # Y covariates
         # c positive constant (regularization)
+        if Y is None:
+            Y = np.zeros((X.shape[0],0))
         
         #NElst = list()
         if (self.ncores>1):
@@ -101,7 +103,10 @@ class discrete_graphical_model:
         cihat = signle_core_self.estimate_CI(X=X[index_list[i],:],Y=Y[index_list[i],:])                
         cihat_combined = np.stack((cihat['conserv'], cihat['nconserv']), axis=1)
         return cihat_combined
-    def estimate_stable_CI(self,X,Y,PFER=.1, npartitions=100, pi_min =.5, pi_max = .7, seed = None):
+    def estimate_stable_CI(self,X,Y=None,PFER=.1, npartitions=100, pi_min =.5, pi_max = .7, seed = None):
+        if Y is None:
+            Y = np.zeros((X.shape[0],0))
+        
         # data partition
         rkf = RepeatedKFold(n_splits=2, n_repeats=int(npartitions/2), random_state=seed)
         index_list = [train_index for (train_index, test_index) in rkf.split(X, Y)]
