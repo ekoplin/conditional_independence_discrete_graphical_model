@@ -56,8 +56,11 @@ if __name__ == "__main__": # test
     X = binary_samples[:,1:]
     
     dgm = discrete_graphical_model(np.geomspace(1e3, 1e-3,1000),ncores=4)
+    
     #cihat = dgm.estimate_CI(X>0, Y>0)
+    
     CI_stable =dgm.estimate_stable_CI(X,Y,PFER=2,npartitions=100,seed=None)
+    
     # {'conserv': array([[False, False, False, False],
     #     [False, False, False, False],
     #     [False, False, False,  True],
@@ -66,29 +69,31 @@ if __name__ == "__main__": # test
     #     [False, False, False, False],
     #     [False, False, False,  True],
     #     [False, False,  True, False]])}
+    
     CI_multiple = dgm.estimate_stable_CI_multiple_datasets([(X,Y),(X,Y),(X,Y)],ncores_outer=3, PFER=2, npartitions=100, seed=None)
-   #  [{'conserv': array([[False, False, False, False],
-   #       [False, False, False, False],
-   #       [False, False, False,  True],
-   #       [False, False,  True, False]]),
-   #  'nconserv': array([[False, False, False, False],
-   #         [False, False, False, False],
-   #         [False, False, False,  True],
-   #         [False, False,  True, False]])},
-   # {'conserv': array([[False, False, False, False],
-   #         [False, False, False, False],
-   #         [False, False, False,  True],
-   #         [False, False,  True, False]]),
-   #  'nconserv': array([[False, False, False, False],
-   #         [False, False, False, False],
-   #         [False, False, False,  True],
-   #         [False, False,  True, False]])},
-   # {'conserv': array([[False, False, False, False],
-   #         [False, False, False, False],
-   #         [False, False, False,  True],
-   #         [False, False,  True, False]]),
-   #  'nconserv': array([[False, False, False, False],
-   #         [False, False, False, False],
-   #         [False, False, False,  True],
-   #         [False, False,  True, False]])}]
+    
+    #  [{'conserv': array([[False, False, False, False],
+    #       [False, False, False, False],
+    #       [False, False, False,  True],
+    #       [False, False,  True, False]]),
+    #  'nconserv': array([[False, False, False, False],
+    #         [False, False, False, False],
+    #         [False, False, False,  True],
+    #         [False, False,  True, False]])},
+    # {'conserv': array([[False, False, False, False],
+    #         [False, False, False, False],
+    #         [False, False, False,  True],
+    #         [False, False,  True, False]]),
+    #  'nconserv': array([[False, False, False, False],
+    #         [False, False, False, False],
+    #         [False, False, False,  True],
+    #         [False, False,  True, False]])},
+    # {'conserv': array([[False, False, False, False],
+    #         [False, False, False, False],
+    #         [False, False, False,  True],
+    #         [False, False,  True, False]]),
+    #  'nconserv': array([[False, False, False, False],
+    #         [False, False, False, False],
+    #         [False, False, False,  True],
+    #         [False, False,  True, False]])}]
 ```
