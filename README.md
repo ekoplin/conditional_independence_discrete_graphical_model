@@ -27,6 +27,10 @@ CI_multiple = dgm.estimate_stable_CI_multiple_datasets([(X1,Y1),(X2,Y2),(X3,Y3)]
 ```
 which return a list of dictionaries.
 
+## Unconditional model
+When the model is unconditional, the function `estimate_stable_CI` can be used with the same parameters as above. The only difference is that the input $`Y`$ is not needed (can be set to None). 
+
+
 
 ## Example
 
