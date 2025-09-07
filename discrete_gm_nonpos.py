@@ -373,18 +373,31 @@ class sdr_discrete_graphical_model:
         return R_diff
 
     def compute_metrics(self, Ri, R, Y_true, R_diff=None):
+        from sklearn.metrics import roc_curve
         # Per-variable
         importance_unsigned = np.mean(np.abs(Ri), axis=0)
         preds_var = (Ri > 0).astype(int)
-        error_rate = np.mean(preds_var != Y_true[:, None], axis=0)
+        error_rate_cut0 = np.mean(preds_var != Y_true[:, None], axis=0)
 
         aucs = []
+        error_rate_opt = []
         for j in range(Ri.shape[1]):
             try:
                 aucs.append(roc_auc_score(Y_true, Ri[:, j]))
             except ValueError:  # only one class present
                 aucs.append(np.nan)
+            # Compute optimal error rate for this variable (threshold sweep)
+            try:
+                fpr, tpr, thresholds = roc_curve(Y_true, Ri[:, j])
+                # error = 1 - accuracy = min{FP+FN}/N = min(fpr*neg + (1-tpr)*pos)/N
+                n_pos = np.sum(Y_true == 1)
+                n_neg = np.sum(Y_true == 0)
+                errors = fpr * n_neg / len(Y_true) + (1 - tpr) * n_pos / len(Y_true)
+                error_rate_opt.append(np.min(errors))
+            except Exception:
+                error_rate_opt.append(np.nan)
         aucs = np.array(aucs)
+        error_rate_opt = np.array(error_rate_opt)
 
         # Global additive (log-ratio)
         global_importance_unsigned = np.mean(np.abs(R))
@@ -394,13 +407,24 @@ class sdr_discrete_graphical_model:
             global_auc = roc_auc_score(Y_true, R)
         except ValueError:
             global_auc = np.nan
+        # Global optimal error rate
+        try:
+            fpr_g, tpr_g, thresholds_g = roc_curve(Y_true, R)
+            n_pos_g = np.sum(Y_true == 1)
+            n_neg_g = np.sum(Y_true == 0)
+            errors_g = fpr_g * n_neg_g / len(Y_true) + (1 - tpr_g) * n_pos_g / len(Y_true)
+            global_error_rate_opt = np.min(errors_g)
+        except Exception:
+            global_error_rate_opt = np.nan
 
         results = dict(
             importance_unsigned=importance_unsigned,
-            error_rate=error_rate,
+            error_rate_cut0=error_rate_cut0,
+            error_rate_opt=error_rate_opt,
             auc=aucs,
             global_importance_unsigned=global_importance_unsigned,
             global_error_rate=global_error_rate,
+            global_error_rate_opt=global_error_rate_opt,
             global_auc=global_auc
         )
 
