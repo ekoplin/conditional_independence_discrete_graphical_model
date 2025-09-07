@@ -31,6 +31,46 @@ which return a list of dictionaries.
 When the model is unconditional, the functions `estimate_CI`, `estimate_stable_CI` and `estimate_stable_CI_multiple_datasets` can be used with the same parameters as above. The only difference is that the input $`Y`$ is not needed (can be set to None). 
 
 
+## Sufficient Dimension Reduction (SDR)
+
+The package now includes a `sdr_discrete_graphical_model` class for comprehensive sufficient dimension reduction (SDR) analysis at both the variable and global levels.
+
+### Overview
+- **Variable-level SDR:** Quantifies the contribution of each variable to the prediction of $Y$.
+- **Global reductions:** Two types are provided:
+  - **Difference-based SDR (`predict_difference`):** Assesses the effect of flipping all variables simultaneously.
+  - **Additive SDR (`predict`):** Aggregates per-variable contributions for each sample.
+- **Laplace smoothing:** Applied to per-variable SDR estimates for numerical stability, especially with small sample sizes or rare events.
+
+### Usage Example
+```python
+from discrete_gm_nonpos import sdr_discrete_graphical_model, discrete_graphical_model
+
+# Estimate neighborhoods first
+dgm = discrete_graphical_model(c=np.geomspace(1e-3, 1e3,1000), ncores=4)
+CI = dgm.estimate_stable_CI(X, Y, PFER=1, npartitions=100, seed=None)
+
+# Initialize SDR with neighborhood matrix
+sdr = sdr_discrete_graphical_model(X, Y, CI['conserv'])
+
+# Per-variable and global additive SDR
+Ri, R = sdr.predict(Xtest)
+
+# Global difference SDR
+R_diff = sdr.predict_difference(Xtest)
+
+# Variable importance evaluation
+results = sdr.evaluate_importance(method="insample")
+print(results)
+```
+
+### Output Meaning
+- `Ri`: Array of per-sample, per-variable additive SDR contributions. Shape: (n_samples, n_variables).
+- `R`: Array of global additive SDR scores for each sample (sum of corresponding row in `Ri`).
+- `R_diff`: Array of global difference-based SDR scores for each sample.
+- `results`: Dictionary (or DataFrame) containing per-variable and global metrics, such as error rates and AUC, quantifying the predictive importance of each variable and the overall SDR reductions.
+
+
 
 ## Example
 
