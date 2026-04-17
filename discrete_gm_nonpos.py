@@ -182,6 +182,143 @@ class discrete_graphical_model:
         func = partial(self.estimate_stable_CI, PFER=PFER, npartitions=npartitions, pi_min=pi_min, pi_max=pi_max, seed=seed)
         with ThreadPoolExecutor(max_workers=self.ncores) as executor:
             return list(executor.map(lambda data: func(*data), X_Y_list))
+    def compute_interaction_logOR(self, X, Y, ne, smoothing=1.0, symmetrize=True):
+        """
+        Computes the expected empirical log-Odds Ratios (logOR) non-parametrically.
+        
+        Parameters:
+        -----------
+        X : np.array of shape (n, p), binary predictors
+        Y : np.array of shape (n, q), binary covariates/outcomes
+        ne : np.array of shape (p, p), boolean adjacency matrix (e.g., from estimate_stable_CI)
+        smoothing : float, Laplace smoothing parameter to avoid log(0).
+        symmetrize: bool, whether to average the directed logORs symmetrically.
+        
+        Returns:
+        --------
+        logOR_matrix : np.array of shape (p, p)
+                       logOR_matrix[i, j] is the expected logOR of X_i and X_j given X_W and Y.
+                       Non-edges are set to np.nan.
+        logOR_Y :      np.array of shape (p,)
+                       logOR_Y[i] is the expected logOR of X_i and Y given X_W.
+                       (Assumes Y is univariate; evaluates the first column of Y).
+        """
+        if Y is None:
+            Y = np.zeros((X.shape[0], 0))
+            
+        n, p = X.shape
+        q = Y.shape[1]
+        YX = np.hstack((Y, X))
+        
+        # 1. Initialize Outputs
+        logOR_matrix = np.full((p, p), np.nan)
+        logOR_Y = np.full(p, np.nan)
+        
+        # ==========================================================
+        # 2. Compute interaction of X_i with X_j (given Y and X_W\j)
+        # ==========================================================
+        for i in range(p):
+            for j in range(p):
+                if i == j or not ne[i, j]:
+                    continue
+                
+                # W is the neighborhood of i, excluding j
+                W_indices = np.where(ne[i, :])[0]
+                W_indices = [w for w in W_indices if w != j]
+                
+                Z_indices = list(range(q)) + [q + w for w in W_indices]
+                V1 = X[:, i]
+                V2 = X[:, j]
+                
+                if len(Z_indices) == 0:
+                    strata = np.zeros(n, dtype=int)
+                    num_strata = 1
+                else:
+                    Z = YX[:, Z_indices]
+                    _, strata = np.unique(Z, axis=0, return_inverse=True)
+                    num_strata = strata.max() + 1
+                    
+                state = V1 * 2 + V2
+                combined_index = strata * 4 + state
+                
+                counts = np.bincount(combined_index, minlength=num_strata * 4).reshape(num_strata, 4)
+                stratum_weights = np.sum(counts, axis=1)
+                
+                counts = counts.astype(float) + smoothing
+                d_k = counts[:, 0] # X_i=0, X_j=0
+                c_k = counts[:, 1] # X_i=0, X_j=1
+                b_k = counts[:, 2] # X_i=1, X_j=0
+                a_k = counts[:, 3] # X_i=1, X_j=1
+                
+                log_or_k = np.log(a_k) + np.log(d_k) - np.log(b_k) - np.log(c_k)
+                valid = stratum_weights > 0
+                
+                if np.sum(stratum_weights[valid]) > 0:
+                    weighted_log_or = np.sum(log_or_k[valid] * stratum_weights[valid]) / np.sum(stratum_weights[valid])
+                    logOR_matrix[i, j] = weighted_log_or
+        
+        # Symmetrize logOR_matrix (Arithmetic Mean)
+        if symmetrize:
+            logOR_matrix_sym = np.full((p, p), np.nan)
+            for i in range(p):
+                for j in range(i, p):
+                    if ne[i, j] or ne[j, i]:
+                        l_ij = logOR_matrix[i, j]
+                        l_ji = logOR_matrix[j, i]
+                        
+                        if not np.isnan(l_ij) and not np.isnan(l_ji):
+                            sym_val = (l_ij + l_ji) / 2.0
+                            logOR_matrix_sym[i, j] = sym_val
+                            logOR_matrix_sym[j, i] = sym_val
+                        elif not np.isnan(l_ij):
+                            logOR_matrix_sym[i, j] = l_ij
+                            logOR_matrix_sym[j, i] = l_ij
+                        elif not np.isnan(l_ji):
+                            logOR_matrix_sym[i, j] = l_ji
+                            logOR_matrix_sym[j, i] = l_ji
+            logOR_matrix = logOR_matrix_sym
+
+        # ==========================================================
+        # 3. Compute interaction of X_i with Y (given X_W)
+        # ==========================================================
+        if q > 0:
+            Y_col = Y[:, 0] # Assume Y is univariate target
+            for i in range(p):
+                # W is the exact neighborhood of i
+                W_indices = np.where(ne[i, :])[0]
+                W_indices = [w for w in W_indices if w != i]
+                
+                if len(W_indices) == 0:
+                    strata = np.zeros(n, dtype=int)
+                    num_strata = 1
+                else:
+                    Z = X[:, W_indices]
+                    _, strata = np.unique(Z, axis=0, return_inverse=True)
+                    num_strata = strata.max() + 1
+                
+                V1 = X[:, i]
+                V2 = Y_col
+                
+                state = V1 * 2 + V2
+                combined_index = strata * 4 + state
+                
+                counts = np.bincount(combined_index, minlength=num_strata * 4).reshape(num_strata, 4)
+                stratum_weights = np.sum(counts, axis=1)
+                
+                counts = counts.astype(float) + smoothing
+                d_k = counts[:, 0] # X_i=0, Y=0
+                c_k = counts[:, 1] # X_i=0, Y=1
+                b_k = counts[:, 2] # X_i=1, Y=0
+                a_k = counts[:, 3] # X_i=1, Y=1
+                
+                log_or_k = np.log(a_k) + np.log(d_k) - np.log(b_k) - np.log(c_k)
+                valid = stratum_weights > 0
+                
+                if np.sum(stratum_weights[valid]) > 0:
+                    weighted_log_or = np.sum(log_or_k[valid] * stratum_weights[valid]) / np.sum(stratum_weights[valid])
+                    logOR_Y[i] = weighted_log_or
+                    
+        return logOR_matrix, logOR_Y
 
 # class cross_validated_discrete_graphical_model:
 #     def __init__(self,c=np.linspace(.1,1,10),ncores=None):
@@ -478,6 +615,137 @@ class sdr_discrete_graphical_model:
         else:
             raise ValueError(f"Unknown method: {method}")
         
+    def _connected_components_indices(self):
+        """Return list of connected components (each as a 1D np.array of indices)
+        for a dense, binary, symmetric adjacency self.ne.
+        """
+        ne = (np.asarray(self.ne) != 0)
+        p = ne.shape[0]
+        visited = np.zeros(p, dtype=bool)
+        comps = []
+        for i in range(p):
+            if not visited[i]:
+                stack = [i]
+                visited[i] = True
+                comp = []
+                while stack:
+                    u = stack.pop()
+                    comp.append(u)
+                    # neighbors of u (no self-edge assumed)
+                    for v in np.flatnonzero(ne[u]):
+                        if not visited[v]:
+                            visited[v] = True
+                            stack.append(v)
+                comps.append(np.array(comp, dtype=int))
+        return comps
+
+    def _aggregate_Ri_by_components(self, Ri, components):
+        """Sum per-variable Ri within each connected component."""
+        if len(components) == 0:
+            return np.zeros((Ri.shape[0], 0))
+        # Each column j is the sum over variables in component j
+        return np.stack([Ri[:, idx].sum(axis=1) for idx in components], axis=1)
+
+    def evaluate_importance_connected_component(self, method="insample", kfolds=5, random_state=None, include_null=True):
+        """
+        Same metrics as `evaluate_importance`, but computed per connected component.
+        We aggregate Ri over each component, then call `compute_metrics` so that
+        AUC and the two error estimates are reported in the same style.
+
+        Returns
+        -------
+        dict
+            {"full": metrics_dict, "null": metrics_dict} if include_null,
+            otherwise {"full": metrics_dict}.
+            Per-component arrays (e.g., 'auc', 'error_rate_cut0', 'error_rate_opt',
+            'importance_unsigned') now have length = number of connected components.
+        """
+        components = self._connected_components_indices()
+        component_labels = np.full(self.p, -1, dtype=int)
+        for cid, idx in enumerate(components):
+            component_labels[idx] = cid
+        if method == "insample":
+            # Full model: reuse the current object
+            Ri, R = self.predict(self.X)
+            R_diff = self.predict_difference(self.X)
+            Ri_cc = self._aggregate_Ri_by_components(Ri, components)
+            full = self.compute_metrics(Ri_cc, R, self.Y[:, 0], R_diff=R_diff)
+
+            if not include_null:
+                return {
+                    "full": full,
+                    "components": components,               # list of arrays with node indices
+                    "component_labels": component_labels,   # length p: node -> component id
+                }
+
+            # Null / independence model
+            ne_null = np.zeros_like(self.ne)
+            model_null = sdr_discrete_graphical_model(self.X, self.Y, ne_null)
+            Ri_n, R_n = model_null.predict(self.X)
+            R_diff_n = model_null.predict_difference(self.X)
+            Ri_cc_n = self._aggregate_Ri_by_components(Ri_n, components)
+            null = self.compute_metrics(Ri_cc_n, R_n, self.Y[:, 0], R_diff=R_diff_n)
+
+            return {
+                    "full": full,
+                    "null": null,
+                    "components": components,               # list of arrays with node indices
+                    "component_labels": component_labels,   # length p: node -> component id
+            }
+
+        elif method == "kfold":
+            X, Y, ne = self.X, self.Y, self.ne
+            kf = KFold(n_splits=kfolds, shuffle=True, random_state=random_state)
+
+            full_list = []
+            null_list = [] if include_null else None
+
+            for train_idx, test_idx in kf.split(X):
+                # Full model
+                model = sdr_discrete_graphical_model(X[train_idx], Y[train_idx], ne)
+                Ri_t, R_t = model.predict(X[test_idx])
+                R_diff_t = model.predict_difference(X[test_idx])
+                Ri_cc_t = self._aggregate_Ri_by_components(Ri_t, components)
+                full_list.append(self.compute_metrics(Ri_cc_t, R_t, Y[test_idx, 0], R_diff=R_diff_t))
+
+                # Null / independence model
+                if include_null:
+                    model_n = sdr_discrete_graphical_model(X[train_idx], Y[train_idx], np.zeros_like(ne))
+                    Ri_nt, R_nt = model_n.predict(X[test_idx])
+                    R_diff_nt = model_n.predict_difference(X[test_idx])
+                    Ri_cc_nt = self._aggregate_Ri_by_components(Ri_nt, components)
+                    null_list.append(self.compute_metrics(Ri_cc_nt, R_nt, Y[test_idx, 0], R_diff=R_diff_nt))
+
+            # Average across folds (same style as evaluate_importance)
+            def _avg(metrics_list):
+                agg = {}
+                for key in metrics_list[0].keys():
+                    vals = [m[key] for m in metrics_list]
+                    if isinstance(vals[0], np.ndarray):
+                        agg[key] = np.nanmean(np.vstack(vals), axis=0)
+                    else:
+                        agg[key] = np.nanmean(vals)
+                return agg
+
+            full = _avg(full_list)
+            if include_null:
+                null = _avg(null_list)
+                return {
+                    "full": full,
+                    "null": null,
+                    "components": components,               # list of arrays with node indices
+                    "component_labels": component_labels,   # length p: node -> component id
+                }
+            else:
+                return {
+                    "full": full,
+                    "components": components,               # list of arrays with node indices
+                    "component_labels": component_labels,   # length p: node -> component id
+                }
+
+        else:
+            raise ValueError(f"Unknown method: {method}")
+        
         
         
         
@@ -607,13 +875,20 @@ class cross_validation_in_prediction:
 if __name__ == "__main__": # test
     np.random.seed(111)
     # generate data
-    p=5
-    n=1000
+    p=6
+    n=100
     beta = (np.random.rand(p,1)>.5).astype(int)
     print(beta.T)
 
-    X     = np.random.randint(0,2,(n,p)).astype(int)
-    Xtest = np.random.randint(0,2,(n,p)).astype(int)
+    # Generate X and Xtest using multivariate normal, then threshold to binary
+    rho = 0.3# reforcement correlation
+    gamma = -0. # noisy coorrelation
+    cov = 1*np.eye(p) + rho* beta @ beta.T + gamma * (np.ones((p,p))-np.eye(p))
+    mean = np.zeros(p)
+    X_real = np.random.multivariate_normal(mean, cov, size=n)
+    Xtest_real = np.random.multivariate_normal(mean, cov, size=n)
+    X = (X_real > 0).astype(int)
+    Xtest = (Xtest_real > 0).astype(int)
     
     
     Y     = ((X @ beta)>0).astype(int)
@@ -666,19 +941,42 @@ if __name__ == "__main__": # test
     CI_stable =dgm.estimate_stable_CI(X,Y=Y,PFER=1,npartitions=100,seed=1)
     print(CI_stable['conserv'])
     
-    # sdr
-    # --- Demonstration of sdr_discrete_graphical_model usage ---
-    # Initialize SDR model with neighborhood from CI_stable
-    sdr = sdr_discrete_graphical_model(X, Y, CI_stable['conserv'])
+    # logOR
+    logOR_matrix, logOR_Y = dgm.compute_interaction_logOR(X, Y, ne=CI_stable['conserv'])
+    logOR_matrix_NP_marginal,logOR_Y_marginal= dgm.compute_interaction_logOR(X, Y=None, ne=CI_stable['conserv'])
+    print("Marginal NP:", logOR_matrix_NP_marginal, logOR_Y_marginal)
+    print("Conditional NP:", logOR_matrix, logOR_Y)
+    # # sdr
+    # # --- Demonstration of sdr_discrete_graphical_model usage ---
+    # # Initialize SDR model with neighborhood from CI_stable
+    # sdr = sdr_discrete_graphical_model(X, Y, CI_stable['conserv'])
 
-    # Call predict on test data (here, reuse Xtest)
-    Ri, R = sdr.predict(Xtest)
-    print("Per-sample per-variable contributions Ri (shape):", Ri.shape)
-    print("Global SDR scores R (first 10):", R[:10])
+    # # Call predict on test data (here, reuse Xtest)
+    # Ri, R = sdr.predict(Xtest)
+    # print("Per-sample per-variable contributions Ri (shape):", Ri.shape)
+    # print("Global SDR scores R (first 10):", R[:10])
 
-    # Call evaluate_importance
-    importance_results = sdr.evaluate_importance(method="kfold", kfolds=5, random_state=42)
-    print("Importance / error / AUC results:")
-    for k, v in importance_results.items():
-        print(k, v)
+    # # Call evaluate_importance
+    # importance_results = sdr.evaluate_importance(method="kfold", kfolds=5, random_state=42)
+    # print("Importance / error / AUC results:")
+    # for k, v in importance_results.items():
+    #     print(k, v)
    
+    # # connected components
+    # # In-sample (both full and null)
+    # cc_metrics = sdr.evaluate_importance_connected_component(method="insample", include_null=True)
+    # print(cc_metrics["full"]["auc"])   # per-component AUC
+    # print(cc_metrics["null"]["auc"])
+    # print(1-cc_metrics["full"]["error_rate_opt"])  
+    # print(1-cc_metrics["null"]["error_rate_opt"])
+    # print(cc_metrics["components"])  # sizes of each connected component
+    # print(cc_metrics["component_labels"])  # mapping of variable index to component ID
+    # # Or k-fold:
+    # cc_metrics_kf = sdr.evaluate_importance_connected_component(method="kfold", kfolds=5, random_state=42)
+    # print(cc_metrics_kf["full"]["auc"])   # per-component AUC
+    # print(cc_metrics_kf["null"]["auc"])
+    # print(1-cc_metrics_kf["full"]["error_rate_opt"])  
+    # print(1-cc_metrics_kf["null"]["error_rate_opt"])
+    # print(cc_metrics_kf["components"])  # sizes of each connected component
+    # print(cc_metrics_kf["component_labels"])  # mapping of variable index to component ID
+    # print(cc_metrics_kf)
