@@ -12,7 +12,8 @@ from itertools import combinations
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import partial
 from sklearn.model_selection import KFold, RepeatedKFold
-
+import numpy as np
+from sklearn.metrics import roc_auc_score, accuracy_score
 
 def int2bin(x, bits):
     x = int(x)
@@ -181,6 +182,143 @@ class discrete_graphical_model:
         func = partial(self.estimate_stable_CI, PFER=PFER, npartitions=npartitions, pi_min=pi_min, pi_max=pi_max, seed=seed)
         with ThreadPoolExecutor(max_workers=self.ncores) as executor:
             return list(executor.map(lambda data: func(*data), X_Y_list))
+    def compute_interaction_logOR(self, X, Y, ne, smoothing=1.0, symmetrize=True):
+        """
+        Computes the expected empirical log-Odds Ratios (logOR) non-parametrically.
+        
+        Parameters:
+        -----------
+        X : np.array of shape (n, p), binary predictors
+        Y : np.array of shape (n, q), binary covariates/outcomes
+        ne : np.array of shape (p, p), boolean adjacency matrix (e.g., from estimate_stable_CI)
+        smoothing : float, Laplace smoothing parameter to avoid log(0).
+        symmetrize: bool, whether to average the directed logORs symmetrically.
+        
+        Returns:
+        --------
+        logOR_matrix : np.array of shape (p, p)
+                       logOR_matrix[i, j] is the expected logOR of X_i and X_j given X_W and Y.
+                       Non-edges are set to np.nan.
+        logOR_Y :      np.array of shape (p,)
+                       logOR_Y[i] is the expected logOR of X_i and Y given X_W.
+                       (Assumes Y is univariate; evaluates the first column of Y).
+        """
+        if Y is None:
+            Y = np.zeros((X.shape[0], 0))
+            
+        n, p = X.shape
+        q = Y.shape[1]
+        YX = np.hstack((Y, X))
+        
+        # 1. Initialize Outputs
+        logOR_matrix = np.full((p, p), np.nan)
+        logOR_Y = np.full(p, np.nan)
+        
+        # ==========================================================
+        # 2. Compute interaction of X_i with X_j (given Y and X_W\j)
+        # ==========================================================
+        for i in range(p):
+            for j in range(p):
+                if i == j or not ne[i, j]:
+                    continue
+                
+                # W is the neighborhood of i, excluding j
+                W_indices = np.where(ne[i, :])[0]
+                W_indices = [w for w in W_indices if w != j]
+                
+                Z_indices = list(range(q)) + [q + w for w in W_indices]
+                V1 = X[:, i]
+                V2 = X[:, j]
+                
+                if len(Z_indices) == 0:
+                    strata = np.zeros(n, dtype=int)
+                    num_strata = 1
+                else:
+                    Z = YX[:, Z_indices]
+                    _, strata = np.unique(Z, axis=0, return_inverse=True)
+                    num_strata = strata.max() + 1
+                    
+                state = V1 * 2 + V2
+                combined_index = strata * 4 + state
+                
+                counts = np.bincount(combined_index, minlength=num_strata * 4).reshape(num_strata, 4)
+                stratum_weights = np.sum(counts, axis=1)
+                
+                counts = counts.astype(float) + smoothing
+                d_k = counts[:, 0] # X_i=0, X_j=0
+                c_k = counts[:, 1] # X_i=0, X_j=1
+                b_k = counts[:, 2] # X_i=1, X_j=0
+                a_k = counts[:, 3] # X_i=1, X_j=1
+                
+                log_or_k = np.log(a_k) + np.log(d_k) - np.log(b_k) - np.log(c_k)
+                valid = stratum_weights > 0
+                
+                if np.sum(stratum_weights[valid]) > 0:
+                    weighted_log_or = np.sum(log_or_k[valid] * stratum_weights[valid]) / np.sum(stratum_weights[valid])
+                    logOR_matrix[i, j] = weighted_log_or
+        
+        # Symmetrize logOR_matrix (Arithmetic Mean)
+        if symmetrize:
+            logOR_matrix_sym = np.full((p, p), np.nan)
+            for i in range(p):
+                for j in range(i, p):
+                    if ne[i, j] or ne[j, i]:
+                        l_ij = logOR_matrix[i, j]
+                        l_ji = logOR_matrix[j, i]
+                        
+                        if not np.isnan(l_ij) and not np.isnan(l_ji):
+                            sym_val = (l_ij + l_ji) / 2.0
+                            logOR_matrix_sym[i, j] = sym_val
+                            logOR_matrix_sym[j, i] = sym_val
+                        elif not np.isnan(l_ij):
+                            logOR_matrix_sym[i, j] = l_ij
+                            logOR_matrix_sym[j, i] = l_ij
+                        elif not np.isnan(l_ji):
+                            logOR_matrix_sym[i, j] = l_ji
+                            logOR_matrix_sym[j, i] = l_ji
+            logOR_matrix = logOR_matrix_sym
+
+        # ==========================================================
+        # 3. Compute interaction of X_i with Y (given X_W)
+        # ==========================================================
+        if q > 0:
+            Y_col = Y[:, 0] # Assume Y is univariate target
+            for i in range(p):
+                # W is the exact neighborhood of i
+                W_indices = np.where(ne[i, :])[0]
+                W_indices = [w for w in W_indices if w != i]
+                
+                if len(W_indices) == 0:
+                    strata = np.zeros(n, dtype=int)
+                    num_strata = 1
+                else:
+                    Z = X[:, W_indices]
+                    _, strata = np.unique(Z, axis=0, return_inverse=True)
+                    num_strata = strata.max() + 1
+                
+                V1 = X[:, i]
+                V2 = Y_col
+                
+                state = V1 * 2 + V2
+                combined_index = strata * 4 + state
+                
+                counts = np.bincount(combined_index, minlength=num_strata * 4).reshape(num_strata, 4)
+                stratum_weights = np.sum(counts, axis=1)
+                
+                counts = counts.astype(float) + smoothing
+                d_k = counts[:, 0] # X_i=0, Y=0
+                c_k = counts[:, 1] # X_i=0, Y=1
+                b_k = counts[:, 2] # X_i=1, Y=0
+                a_k = counts[:, 3] # X_i=1, Y=1
+                
+                log_or_k = np.log(a_k) + np.log(d_k) - np.log(b_k) - np.log(c_k)
+                valid = stratum_weights > 0
+                
+                if np.sum(stratum_weights[valid]) > 0:
+                    weighted_log_or = np.sum(log_or_k[valid] * stratum_weights[valid]) / np.sum(stratum_weights[valid])
+                    logOR_Y[i] = weighted_log_or
+                    
+        return logOR_matrix, logOR_Y
 
 # class cross_validated_discrete_graphical_model:
 #     def __init__(self,c=np.linspace(.1,1,10),ncores=None):
@@ -267,50 +405,346 @@ class discrete_graphical_model:
                         
 
 class sdr_discrete_graphical_model:
-    def __init__(self,conservative=True,c=np.linspace(.1,1,10),ncores=None):
-        self.c = c
-        self.ncores = ncores
-        self.conservative = conservative
-    def learn(self, X,Y):
-        assert Y.shape[1]==1,'Y must be univariate'
-        assert Y.shape[0]==X.shape[0],'n'
+    def __init__(self, X, Y, ne):
+        # X: (n, p), Y: (n, 1), ne: (p, p) boolean array (adjacency/neighborhood matrix)
+        assert Y.ndim == 2 and Y.shape[1] == 1, "Y must be univariate and 2D"
+        assert X.shape[0] == Y.shape[0], "X and Y must have same number of samples"
+        self.X = X.astype(int)
+        self.Y = Y.astype(int).reshape(-1, 1)
+        self.ne = ne
         self.p = X.shape[1]
-        self.q = Y.shape[1]
+    def learn(self, X, Y):
+        # Deprecated: learning is now done at initialization
+        raise NotImplementedError("Use __init__(X, Y, ne) to initialize the model with neighborhood structure.")
+    def predict(self, X):
+        """
+        Returns (Ri, R): 
+        - Ri[s, i] = log-ratio for variable i at sample s
+        - R[s] = sum_i Ri[s, i]
+        Uses the encoding-based approach of predict_difference to compute per-variable log-ratios.
+        Applies Laplace smoothing to conditional probability estimates.
+        """
+        n_samples, p = X.shape
+        Ri = np.zeros((n_samples, p))
+        X_train = self.X
+        Y_train = self.Y[:, 0].astype(int)
+        index_y1 = (Y_train == 1)
+        index_y0 = (Y_train == 0)
+
+        for i in range(p):
+            ne_i = self.ne[i]
+            ne_i_with_self = ne_i.copy()
+            ne_i_with_self[i] = True
+
+            # Neighbor encodings for train and test
+            if np.any(ne_i):
+                Xwint_train = X_train[:, ne_i].dot(np.power(2, np.arange(np.sum(ne_i)-1, -1, -1)))
+                Xwint_test = X[:, ne_i].dot(np.power(2, np.arange(np.sum(ne_i)-1, -1, -1)))
+            else:
+                Xwint_train = np.zeros(X_train.shape[0], dtype=int)
+                Xwint_test = np.zeros(n_samples, dtype=int)
+
+            # Neighbor+variable encodings for train and test
+            Xvwint_train = X_train[:, ne_i_with_self].dot(np.power(2, np.arange(np.sum(ne_i_with_self)-1, -1, -1)))
+            Xvwint_test = X[:, ne_i_with_self].dot(np.power(2, np.arange(np.sum(ne_i_with_self)-1, -1, -1)))
+
+            for s in range(n_samples):
+                # Find training samples where neighbors match and Y=1 or Y=0
+                idx_match_w_y1 = (Xwint_train == Xwint_test[s]) & index_y1
+                idx_match_w_y0 = (Xwint_train == Xwint_test[s]) & index_y0
+                idx_match_vw_y1 = (Xvwint_train == Xvwint_test[s]) & index_y1
+                idx_match_vw_y0 = (Xvwint_train == Xvwint_test[s]) & index_y0
+
+                denom_y1 = np.sum(idx_match_w_y1)
+                numer_y1 = np.sum(idx_match_vw_y1)
+                denom_y0 = np.sum(idx_match_w_y0)
+                numer_y0 = np.sum(idx_match_vw_y0)
+
+                # Laplace smoothing: add 1 to numerator, 2 to denominator
+                prob_y1 = (numer_y1 + 1) / (denom_y1 + 2)
+                prob_y0 = (numer_y0 + 1) / (denom_y0 + 2)
+
+                Ri[s, i] = np.log(prob_y1 / prob_y0)
+
+        R = Ri.sum(axis=1)
+        return (Ri, R)
+    def predict_difference(self, X):
+        """
+        Compute SDR using pseudolikelihood difference:
+        R(X) = P(X|Y=1) - P(X|Y=0).
+        Returns: R_diff of shape (n_samples,)
+        """
+        n_samples, p = X.shape
+        X_train = self.X
+        Y_train = self.Y[:, 0]
+        index_y1 = (Y_train != 0)
+
+        pl_y1 = np.ones(n_samples)
+        pl_y0 = np.ones(n_samples)
+
+        for i in range(p):
+            ne_i = self.ne[i]
+            ne_i_with_self = ne_i.copy()
+            ne_i_with_self[i] = True
+
+            # Encodings of neighbors and neighbors+variable
+            Xwint_test = (X[:, ne_i]).dot(np.power(2, np.arange(np.sum(ne_i)-1, -1, -1))) if np.any(ne_i) else np.zeros(n_samples)
+            Xwint_train = (X_train[:, ne_i]).dot(np.power(2, np.arange(np.sum(ne_i)-1, -1, -1))) if np.any(ne_i) else np.zeros(X_train.shape[0])
+
+            Xvwint_test = (X[:, ne_i_with_self]).dot(np.power(2, np.arange(np.sum(ne_i_with_self)-1, -1, -1)))
+            Xvwint_train = (X_train[:, ne_i_with_self]).dot(np.power(2, np.arange(np.sum(ne_i_with_self)-1, -1, -1)))
+
+            for s in range(n_samples):
+                index_match_w = (Xwint_train == Xwint_test[s])
+                index_match_vw = (Xvwint_train == Xvwint_test[s])
+
+                # For Y=1
+                Nwy = np.sum(index_match_w & index_y1)
+                pl_y1[s] *= 0 if Nwy == 0 else np.sum(index_match_vw & index_y1) / Nwy
+
+                # For Y=0
+                Nwny = np.sum(index_match_w & ~index_y1)
+                pl_y0[s] *= 0 if Nwny == 0 else np.sum(index_match_vw & ~index_y1) / Nwny
+
+        R_diff = pl_y1 - pl_y0
+        return R_diff
+
+    def compute_metrics(self, Ri, R, Y_true, R_diff=None):
+        from sklearn.metrics import roc_curve
+        # Per-variable
+        importance_unsigned = np.mean(np.abs(Ri), axis=0)
+        preds_var = (Ri > 0).astype(int)
+        error_rate_cut0 = np.mean(preds_var != Y_true[:, None], axis=0)
+
+        aucs = []
+        error_rate_opt = []
+        for j in range(Ri.shape[1]):
+            try:
+                aucs.append(roc_auc_score(Y_true, Ri[:, j]))
+            except ValueError:  # only one class present
+                aucs.append(np.nan)
+            # Compute optimal error rate for this variable (threshold sweep)
+            try:
+                fpr, tpr, thresholds = roc_curve(Y_true, Ri[:, j])
+                # error = 1 - accuracy = min{FP+FN}/N = min(fpr*neg + (1-tpr)*pos)/N
+                n_pos = np.sum(Y_true == 1)
+                n_neg = np.sum(Y_true == 0)
+                errors = fpr * n_neg / len(Y_true) + (1 - tpr) * n_pos / len(Y_true)
+                error_rate_opt.append(np.min(errors))
+            except Exception:
+                error_rate_opt.append(np.nan)
+        aucs = np.array(aucs)
+        error_rate_opt = np.array(error_rate_opt)
+
+        # Global additive (log-ratio)
+        global_importance_unsigned = np.mean(np.abs(R))
+        preds_global = (R > 0).astype(int)
+        global_error_rate = np.mean(preds_global != Y_true)
+        try:
+            global_auc = roc_auc_score(Y_true, R)
+        except ValueError:
+            global_auc = np.nan
+        # Global optimal error rate
+        try:
+            fpr_g, tpr_g, thresholds_g = roc_curve(Y_true, R)
+            n_pos_g = np.sum(Y_true == 1)
+            n_neg_g = np.sum(Y_true == 0)
+            errors_g = fpr_g * n_neg_g / len(Y_true) + (1 - tpr_g) * n_pos_g / len(Y_true)
+            global_error_rate_opt = np.min(errors_g)
+        except Exception:
+            global_error_rate_opt = np.nan
+
+        results = dict(
+            importance_unsigned=importance_unsigned,
+            error_rate_cut0=error_rate_cut0,
+            error_rate_opt=error_rate_opt,
+            auc=aucs,
+            global_importance_unsigned=global_importance_unsigned,
+            global_error_rate=global_error_rate,
+            global_error_rate_opt=global_error_rate_opt,
+            global_auc=global_auc
+        )
+
+        # Global difference (if provided)
+        if R_diff is not None:
+            preds_diff = (R_diff > 0).astype(int)
+            global_diff_error_rate = np.mean(preds_diff != Y_true)
+            try:
+                global_diff_auc = roc_auc_score(Y_true, R_diff)
+            except ValueError:
+                global_diff_auc = np.nan
+            results["global_diff_error_rate"] = global_diff_error_rate
+            results["global_diff_auc"] = global_diff_auc
+
+        return results
+    
+    def evaluate_importance(self, method="insample", kfolds=5, random_state=None):
+        """
+        Evaluate variable importance, signed/unsigned, error rate, and AUC.
+        Also reports the same metrics for the global SDR score.
+        Returns: dict with keys for per-variable and global metrics.
+        """
+        if method == "insample":
+            Ri, R = self.predict(self.X)
+            R_diff = self.predict_difference(self.X)
+            return self.compute_metrics(Ri, R, self.Y[:, 0], R_diff=R_diff)
+
+        elif method == "kfold":
+            X, Y, ne = self.X, self.Y, self.ne
+            kf = KFold(n_splits=kfolds, shuffle=True, random_state=random_state)
+
+            metrics_list = []
+            for train_idx, test_idx in kf.split(X):
+                model = sdr_discrete_graphical_model(X[train_idx], Y[train_idx], ne)
+                Ri_test, R_test = model.predict(X[test_idx])
+                R_diff = model.predict_difference(X[test_idx])
+                metrics = self.compute_metrics(Ri_test, R_test, Y[test_idx, 0], R_diff=R_diff)
+                metrics_list.append(metrics)
+
+            # Average across folds
+            agg = {}
+            for key in metrics_list[0].keys():
+                vals = [m[key] for m in metrics_list]
+                # Use isinstance for type checking, and aggregate accordingly
+                if isinstance(vals[0], np.ndarray):
+                    agg[key] = np.nanmean(np.vstack(vals), axis=0)
+                else:
+                    agg[key] = np.nanmean(vals)
+            return agg
+
+        else:
+            raise ValueError(f"Unknown method: {method}")
         
-        self.X=X
-        self.Y=Y
-        
-        self.dgm = discrete_graphical_model(self.c,self.ncores)
-        self.ne = self.dgm.estimate_CI(X,Y)['conserv' if self.conservative else 'nconserv']
-    def predict(self,X):
-        # sdr of Y given X
-        pl_y1_y0 =  np.ones((X.shape[0],self.c.shape[0],2))
-        
-        index_y1 = self.Y[:,0]!=0
-        for ic,c in enumerate(self.c):
-            neic=self.ne[ic]# neighbourhood matrix 
-            for indx_v in range(self.p):
-                indx_w = neic[indx_v]# row i of incidence matrix
-                indx_vw = np.array(indx_w)
-                indx_vw[indx_v]=True
-                
-                # project X(test) into ne_v
-                Xwint_test  = (X*indx_w).dot(np.power(2,np.arange(self.p-1,0-1,-1)))
-                Xwint_train = (self.X*indx_w).dot(np.power(2,np.arange(self.p-1,0-1,-1)))
-                
-                Xvwint_test  = (X*indx_vw).dot(np.power(2,np.arange(self.p-1,0-1,-1)))
-                Xvwint_train = (self.X*indx_vw).dot(np.power(2,np.arange(self.p-1,0-1,-1)))
-                for s in range(X.shape[0]):# sample
-                    # filter training data to match neighbour values
-                    index_match_w  = Xwint_train==Xwint_test[s]
-                    index_match_vw = Xvwint_train==Xvwint_test[s]
-                    
-                    Nwy=sum(np.bitwise_and(index_match_w,index_y1))
-                    pl_y1_y0[s,ic,1] *= 0 if Nwy==0 else sum(np.bitwise_and(index_match_vw,index_y1))/Nwy
-                    Nwny=sum(np.bitwise_and(index_match_w,~index_y1))
-                    pl_y1_y0[s,ic,0] *= 0 if Nwny==0 else sum(np.bitwise_and(index_match_vw,~index_y1))/Nwny
-        sdr = pl_y1_y0[:,:,1] - pl_y1_y0[:,:,0]
-        return(sdr)
+    def _connected_components_indices(self):
+        """Return list of connected components (each as a 1D np.array of indices)
+        for a dense, binary, symmetric adjacency self.ne.
+        """
+        ne = (np.asarray(self.ne) != 0)
+        p = ne.shape[0]
+        visited = np.zeros(p, dtype=bool)
+        comps = []
+        for i in range(p):
+            if not visited[i]:
+                stack = [i]
+                visited[i] = True
+                comp = []
+                while stack:
+                    u = stack.pop()
+                    comp.append(u)
+                    # neighbors of u (no self-edge assumed)
+                    for v in np.flatnonzero(ne[u]):
+                        if not visited[v]:
+                            visited[v] = True
+                            stack.append(v)
+                comps.append(np.array(comp, dtype=int))
+        return comps
+
+    def _aggregate_Ri_by_components(self, Ri, components):
+        """Sum per-variable Ri within each connected component."""
+        if len(components) == 0:
+            return np.zeros((Ri.shape[0], 0))
+        # Each column j is the sum over variables in component j
+        return np.stack([Ri[:, idx].sum(axis=1) for idx in components], axis=1)
+
+    def evaluate_importance_connected_component(self, method="insample", kfolds=5, random_state=None, include_null=True):
+        """
+        Same metrics as `evaluate_importance`, but computed per connected component.
+        We aggregate Ri over each component, then call `compute_metrics` so that
+        AUC and the two error estimates are reported in the same style.
+
+        Returns
+        -------
+        dict
+            {"full": metrics_dict, "null": metrics_dict} if include_null,
+            otherwise {"full": metrics_dict}.
+            Per-component arrays (e.g., 'auc', 'error_rate_cut0', 'error_rate_opt',
+            'importance_unsigned') now have length = number of connected components.
+        """
+        components = self._connected_components_indices()
+        component_labels = np.full(self.p, -1, dtype=int)
+        for cid, idx in enumerate(components):
+            component_labels[idx] = cid
+        if method == "insample":
+            # Full model: reuse the current object
+            Ri, R = self.predict(self.X)
+            R_diff = self.predict_difference(self.X)
+            Ri_cc = self._aggregate_Ri_by_components(Ri, components)
+            full = self.compute_metrics(Ri_cc, R, self.Y[:, 0], R_diff=R_diff)
+
+            if not include_null:
+                return {
+                    "full": full,
+                    "components": components,               # list of arrays with node indices
+                    "component_labels": component_labels,   # length p: node -> component id
+                }
+
+            # Null / independence model
+            ne_null = np.zeros_like(self.ne)
+            model_null = sdr_discrete_graphical_model(self.X, self.Y, ne_null)
+            Ri_n, R_n = model_null.predict(self.X)
+            R_diff_n = model_null.predict_difference(self.X)
+            Ri_cc_n = self._aggregate_Ri_by_components(Ri_n, components)
+            null = self.compute_metrics(Ri_cc_n, R_n, self.Y[:, 0], R_diff=R_diff_n)
+
+            return {
+                    "full": full,
+                    "null": null,
+                    "components": components,               # list of arrays with node indices
+                    "component_labels": component_labels,   # length p: node -> component id
+            }
+
+        elif method == "kfold":
+            X, Y, ne = self.X, self.Y, self.ne
+            kf = KFold(n_splits=kfolds, shuffle=True, random_state=random_state)
+
+            full_list = []
+            null_list = [] if include_null else None
+
+            for train_idx, test_idx in kf.split(X):
+                # Full model
+                model = sdr_discrete_graphical_model(X[train_idx], Y[train_idx], ne)
+                Ri_t, R_t = model.predict(X[test_idx])
+                R_diff_t = model.predict_difference(X[test_idx])
+                Ri_cc_t = self._aggregate_Ri_by_components(Ri_t, components)
+                full_list.append(self.compute_metrics(Ri_cc_t, R_t, Y[test_idx, 0], R_diff=R_diff_t))
+
+                # Null / independence model
+                if include_null:
+                    model_n = sdr_discrete_graphical_model(X[train_idx], Y[train_idx], np.zeros_like(ne))
+                    Ri_nt, R_nt = model_n.predict(X[test_idx])
+                    R_diff_nt = model_n.predict_difference(X[test_idx])
+                    Ri_cc_nt = self._aggregate_Ri_by_components(Ri_nt, components)
+                    null_list.append(self.compute_metrics(Ri_cc_nt, R_nt, Y[test_idx, 0], R_diff=R_diff_nt))
+
+            # Average across folds (same style as evaluate_importance)
+            def _avg(metrics_list):
+                agg = {}
+                for key in metrics_list[0].keys():
+                    vals = [m[key] for m in metrics_list]
+                    if isinstance(vals[0], np.ndarray):
+                        agg[key] = np.nanmean(np.vstack(vals), axis=0)
+                    else:
+                        agg[key] = np.nanmean(vals)
+                return agg
+
+            full = _avg(full_list)
+            if include_null:
+                null = _avg(null_list)
+                return {
+                    "full": full,
+                    "null": null,
+                    "components": components,               # list of arrays with node indices
+                    "component_labels": component_labels,   # length p: node -> component id
+                }
+            else:
+                return {
+                    "full": full,
+                    "components": components,               # list of arrays with node indices
+                    "component_labels": component_labels,   # length p: node -> component id
+                }
+
+        else:
+            raise ValueError(f"Unknown method: {method}")
         
         
         
@@ -439,16 +873,26 @@ class cross_validation_in_prediction:
     #     self.predObj.c = self.predObj.c[icstar,None]
     #     self.predObj.learn(self.X,self.Y)
 if __name__ == "__main__": # test
-    p=5
-    n=1000
+    np.random.seed(111)
+    # generate data
+    p=6
+    n=100
     beta = (np.random.rand(p,1)>.5).astype(int)
+    print(beta.T)
+
+    # Generate X and Xtest using multivariate normal, then threshold to binary
+    rho = 0.3# reforcement correlation
+    gamma = -0. # noisy coorrelation
+    cov = 1*np.eye(p) + rho* beta @ beta.T + gamma * (np.ones((p,p))-np.eye(p))
+    mean = np.zeros(p)
+    X_real = np.random.multivariate_normal(mean, cov, size=n)
+    Xtest_real = np.random.multivariate_normal(mean, cov, size=n)
+    X = (X_real > 0).astype(int)
+    Xtest = (Xtest_real > 0).astype(int)
     
-    X     = np.random.randint(0,2,(n,p)).astype(int)>0
-    Xtest = np.random.randint(0,2,(n,p)).astype(int)>0
     
-    
-    Y     = ((X @ beta)>0).astype(int)>0
-    Ytest = ((Xtest @ beta)>0).astype(int)>0
+    Y     = ((X @ beta)>0).astype(int)
+    Ytest = ((Xtest @ beta)>0).astype(int)
     
     # # graphical model
     # ci=discrete_graphical_model(np.linspace(1, 10,10),10).estimate_CI(X>0, Y>0)# only binary data allowed
@@ -495,7 +939,44 @@ if __name__ == "__main__": # test
     dgm = discrete_graphical_model(np.geomspace(1e3, 1e-9,1000),ncores=11)
     #cihat = dgm.estimate_CI(X>0, Y>0)
     CI_stable =dgm.estimate_stable_CI(X,Y=Y,PFER=1,npartitions=100,seed=1)
+    print(CI_stable['conserv'])
     
-    
-    # parallelize multiple trainigs:
+    # logOR
+    logOR_matrix, logOR_Y = dgm.compute_interaction_logOR(X, Y, ne=CI_stable['conserv'])
+    logOR_matrix_NP_marginal,logOR_Y_marginal= dgm.compute_interaction_logOR(X, Y=None, ne=CI_stable['conserv'])
+    print("Marginal NP:", logOR_matrix_NP_marginal, logOR_Y_marginal)
+    print("Conditional NP:", logOR_matrix, logOR_Y)
+    # # sdr
+    # # --- Demonstration of sdr_discrete_graphical_model usage ---
+    # # Initialize SDR model with neighborhood from CI_stable
+    # sdr = sdr_discrete_graphical_model(X, Y, CI_stable['conserv'])
+
+    # # Call predict on test data (here, reuse Xtest)
+    # Ri, R = sdr.predict(Xtest)
+    # print("Per-sample per-variable contributions Ri (shape):", Ri.shape)
+    # print("Global SDR scores R (first 10):", R[:10])
+
+    # # Call evaluate_importance
+    # importance_results = sdr.evaluate_importance(method="kfold", kfolds=5, random_state=42)
+    # print("Importance / error / AUC results:")
+    # for k, v in importance_results.items():
+    #     print(k, v)
    
+    # # connected components
+    # # In-sample (both full and null)
+    # cc_metrics = sdr.evaluate_importance_connected_component(method="insample", include_null=True)
+    # print(cc_metrics["full"]["auc"])   # per-component AUC
+    # print(cc_metrics["null"]["auc"])
+    # print(1-cc_metrics["full"]["error_rate_opt"])  
+    # print(1-cc_metrics["null"]["error_rate_opt"])
+    # print(cc_metrics["components"])  # sizes of each connected component
+    # print(cc_metrics["component_labels"])  # mapping of variable index to component ID
+    # # Or k-fold:
+    # cc_metrics_kf = sdr.evaluate_importance_connected_component(method="kfold", kfolds=5, random_state=42)
+    # print(cc_metrics_kf["full"]["auc"])   # per-component AUC
+    # print(cc_metrics_kf["null"]["auc"])
+    # print(1-cc_metrics_kf["full"]["error_rate_opt"])  
+    # print(1-cc_metrics_kf["null"]["error_rate_opt"])
+    # print(cc_metrics_kf["components"])  # sizes of each connected component
+    # print(cc_metrics_kf["component_labels"])  # mapping of variable index to component ID
+    # print(cc_metrics_kf)
